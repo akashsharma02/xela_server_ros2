@@ -19,6 +19,7 @@ from rclpy.executors import SingleThreadedExecutor
 import argparse
 import importlib
 
+from std_msgs.msg import Header
 from xela_server_ros2.msg import SensStream, SensorFull, Taxel, Forces
 from xela_server_ros2.srv import XelaSensorStream
 
@@ -375,7 +376,7 @@ class ServiceNode(Node):
         info("Starting ServiceNode")
         super().__init__(name)
         self.data = {}
-        self.__lock = threading.Lock()
+        # self.__lock = threading.Lock()
         self.publisher_ = None
         self.msg = None
         self.srv = []
@@ -384,9 +385,9 @@ class ServiceNode(Node):
     def setup_services(self):
         """Set up ROS 2 services."""
         self.add_service('xServStream', XelaSensorStream, self.service_data_stream_callback)
-        self.add_publisher('xServTopic', SensStream, queue_size=10)
+        self.add_publisher('xServTopic', SensStream)
 
-    def add_publisher(self, name, srv, queue_size=10):
+    def add_publisher(self, name, srv):
         """
         Add a ROS 2 publisher.
 
@@ -395,7 +396,7 @@ class ServiceNode(Node):
             srv: The service message type.
             queue_size (int, optional): The size of the message queue. Default is 10.
         """
-        self.publisher_ = self.create_publisher(srv, name, queue_size)
+        self.publisher_ = self.create_publisher(srv, name, 10)
 
     def add_service(self, name, srv, callback):
         """
@@ -420,14 +421,14 @@ class ServiceNode(Node):
         Returns:
             XelaSensorStream.Response: The response message containing sensor data.
         """
-        with self.__lock:
-            if request.sensor == 0:
-                if self.data:
-                    response.data = [self.data[x] for x in self.data.keys()]
-                else:
-                    response.data = [not_avail]
+        # with self.__lock:
+        if request.sensor == 0:
+            if self.data:
+                response.data = [self.data[x] for x in self.data.keys()]
             else:
-                response.data = [self.data.get(str(request.sensor), not_avail)]
+                response.data = [not_avail]
+        else:
+            response.data = [self.data.get(str(request.sensor), not_avail)]
         return response
 
     def publish(self, data):
@@ -437,16 +438,20 @@ class ServiceNode(Node):
         Args:
             data (dict): A dictionary containing sensor data.
         """
-        with self.__lock:
-            self.data = data
+        # with self.__lock:
+        self.data = data
+
         obj = SensStream()
+        obj.header = Header(stamp=rclpy.time.Time(nanoseconds=data['time'] * 1e9).to_msg())
+        del data['time']
+        del data['sendtime']
         obj.sensors = tuple(data.values())
         self.publisher_.publish(obj)
 
     def reset(self):
         """Reset the node by clearing all stored data"""
-        with self.__lock:
-            self.data = {}
+        # with self.__lock:
+        self.data = {}
         warn("Node reset")
 
 
@@ -472,6 +477,7 @@ def message_parser(msg_obj, msg_no: int = 0):
     values = []
     forces = []
     taxels = msg_obj.get("taxels", -1)
+    # info(f"data: {msg_obj.get('data')}")
     data_val = msg_obj.get("data", "").split(",")
     if len(data_val) != 3 * taxels:
         error(f"Taxel count mismatch: {taxels} != {int(len(data_val) / 3)}")
@@ -535,7 +541,7 @@ def on_message(wsapp, message):
                 pass
             else:
                 elements = get_numeric(data.keys())
-                data_container = {}
+                data_container = {'time': data['time'], 'sendtime': data['sendtime']}
                 for key in elements:
                     try:
                         resp = message_parser(data[key], data['message'])
